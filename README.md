@@ -3,9 +3,12 @@
 A Claude skill for **finding** the correct solution to a hard problem — not authoring one.
 
 It dispatches independent search subagents that explore different regions of the
-solution space, filters their candidates adversarially, and selects the survivor.
-Confidence comes from independent paths converging and an adversary failing to break
-what's left — not from a single confident chain of thought.
+solution space, has a critic surface concerns about each candidate tagged by
+severity (not eliminative verdicts), and lets a synthesizer weigh them.
+Confidence comes from independent paths converging and the critic finding no
+critical concerns on the chosen path — not from a single confident chain of
+thought, and not from a binary "broken / survived" verdict that hides the 80% of
+each candidate that worked.
 
 ---
 
@@ -21,11 +24,12 @@ This skill breaks that by separating three jobs:
 | Role | Does | Does NOT |
 |------|------|----------|
 | **Searchers** | explore different regions of the solution space, in isolation | see each other's work |
-| **Adversary** | break candidates against fixed acceptance criteria | author, improve, or vote |
-| **Synthesis** | select the survivor; compose only from validated parts | average or blend candidates |
+| **Critic** | surface concerns in each candidate against fixed acceptance criteria, tagged by severity (CRITICAL/MAJOR/MINOR/CLEAR) | issue BROKEN/SURVIVED verdicts, rank candidates, or pick a favorite |
+| **Synthesizer** | read the whole concerns matrix and decide; compose from components whose concerns are minor or resolved | average or blend candidates that share critical concerns |
 
-The slogan: **searchers explore, the adversary eliminates, synthesis selects.**
-A solution is *found* (survives elimination), never just *written*.
+The slogan: **searchers explore, critics surface concerns, the synthesizer decides.**
+A solution is *found* by weighing concerns against context — not by surviving
+elimination, and not by being the prettiest draft.
 
 ---
 
@@ -51,27 +55,38 @@ problems.
 
 1. **Phase 0 — Gate.** Confirm the problem actually needs this. If one approach is
    obviously right, skip the skill.
-2. **Phase 1 — Frame.** State the problem, acceptance criteria, and constraints. Then
-   pick *how the searchers will diverge* — per problem, from: decomposition strategy,
-   starting assumptions, abstraction level, or solution strategy — and justify the choice
-   in one line so the agents genuinely cover different ground.
+2. **Phase 1 — Frame.** State the problem, acceptance criteria, and constraints. If
+   you can't write the acceptance criteria concretely, you don't yet know the problem
+   — keep framing in the main context, do not dispatch yet. Then pick *how the searchers
+   will diverge* — per problem, from: decomposition strategy, starting assumptions,
+   abstraction level, or solution strategy — and justify the choice in one line.
 3. **Phase 2 — Search.** Spawn ≥3 searcher subagents in isolated context. Each gets the
    problem and *only its own* divergence brief, and returns a candidate plus its
    assumptions, weakest point, and how to check it.
-4. **Phase 3 — Filter.** An adversary subagent tries to break each candidate
-   (counterexamples, violated constraints, false assumptions, edge cases, failure modes).
-   What can't be broken is found; what breaks is eliminated, with the reason recorded.
-5. **Phase 4 — Converge.** Look for conclusions that appear *independently* across
-   different briefs. Name any shared assumption behind apparent agreement.
-6. **Phase 5 — Select.**
-   - One survivor → that's the answer.
-   - Several agree → report it, note the corroboration.
-   - Several survive and disagree → compress the fork to the single deciding pivot and
-     **ask the user to choose** (the tiebreaker is usually context only they have). In a
-     headless run, recommend the broadly-safest candidate and flag it unresolved.
+4. **Phase 3 — Review.** A critic subagent finds concerns in each candidate
+   (counterexamples, violated constraints, false assumptions, edge cases, failure modes)
+   and tags each by severity: CRITICAL, MAJOR, MINOR, CLEAR. No BROKEN/SURVIVED
+   verdicts — concerns inform; the synthesizer decides. A CRITICAL concern shared
+   across multiple candidates is flagged as a SHARED CRITICAL (usually the most
+   valuable signal in the whole run — points at problem framing or upstream blocker).
+5. **Phase 4 — Converge.** Read the matrix. Which conclusions appear *independently*
+   across different briefs? Which CRITICAL concerns appear across multiple candidates?
+   Which MAJOR concerns will travel with the chosen design? Name any shared assumption
+   behind apparent agreement.
+6. **Phase 5 — Synthesize.** Four shapes:
+   - One candidate has only minor concerns → that's the answer; minor concerns become
+     known costs alongside it.
+   - A CRITICAL concern is shared across candidates → the concern *is* the answer.
+     Don't pick from a set that all share a blocker; fix the blocker first.
+   - Several candidates have different critical concerns that don't converge →
+     compress to the deciding pivot and **ask the user to choose** (the tiebreaker is
+     usually context only they have). In a headless run, recommend the candidate whose
+     critical concerns are easiest to retire and flag it unresolved.
+   - Every candidate has critical concerns that don't share a cause → the search space
+     was too narrow. Return to Phase 1 with a different divergence axis.
 
-Output always reports not just the answer but *how it was found* — which candidates were
-eliminated and why — so the reasoning is auditable.
+Output always reports not just the answer but *the concerns matrix* — every candidate's
+concerns, severity-tagged — so the reasoning is auditable and the reader can re-weigh.
 
 ---
 
@@ -97,7 +112,7 @@ Claude Code skill installer.
 ├── SKILL.md
 └── references/
     ├── searcher-brief.md
-    └── adversary-brief.md
+    └── critic-brief.md
 ```
 
 `SKILL.md` is the entry point; the two briefs in `references/` are loaded only when the
@@ -112,7 +127,7 @@ needed).
 |------|---------|
 | `SKILL.md` | The protocol: phases, output format, anti-patterns. Triggered by the `description` frontmatter. |
 | `references/searcher-brief.md` | Template sent to each searcher subagent. Enforces isolation — each sees only its own angle. |
-| `references/adversary-brief.md` | Template sent to the adversary. Enforces role discipline — break only, never build or vote. |
+| `references/critic-brief.md` | Template sent to the critic. Enforces role discipline — surface concerns by severity, never issue BROKEN/SURVIVED verdicts and never pick a favorite. |
 
 ---
 

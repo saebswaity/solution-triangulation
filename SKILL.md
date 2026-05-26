@@ -1,6 +1,6 @@
 ---
 name: solution-triangulation
-description: Find the correct solution to a hard problem by dispatching independent search subagents that explore different regions of the solution space, then filtering candidates adversarially and selecting the survivor. Use this whenever a task is high-stakes, ambiguous, error-prone, or has a correct answer that is hard to verify by inspection — tricky algorithms, architecture decisions where the wrong choice is expensive, subtle debugging, security review, mathematical proofs, or any case where a single chain of thought might confidently land on the wrong answer. Do NOT use for routine tasks, simple lookups, or work where one obvious approach is clearly correct — the cost is not justified there.
+description: Find the correct solution to a hard problem by dispatching independent search subagents that explore different regions of the solution space, then reviewing candidates critically (concerns tagged by severity, not eliminative verdicts) and letting a synthesizer weigh them. Use this whenever a task is high-stakes, ambiguous, error-prone, or has a correct answer that is hard to verify by inspection — tricky algorithms, architecture decisions where the wrong choice is expensive, subtle debugging, security review, mathematical proofs, or any case where a single chain of thought might confidently land on the wrong answer. Do NOT use for routine tasks, simple lookups, or work where one obvious approach is clearly correct — the cost is not justified there.
 ---
 
 # Solution Triangulation
@@ -11,7 +11,7 @@ The purpose of this protocol is to **find** the correct solution, not to **autho
 
 This distinction governs every step. Authoring rewards consensus: you would average several drafts, smooth over disagreement, and ship the median. That is exactly wrong for finding. Finding rewards two things: **coverage** (did we look in enough different places?) and **discrimination** (can we tell the right candidate from a plausible wrong one?). Under this frame, disagreement between agents is the most valuable signal in the whole process — it marks the boundary where the answer is actually decided. Suppressing it to reach a tidy conclusion throws away the information you spawned the agents to get.
 
-So: searchers explore, an adversary eliminates, and synthesis selects. Synthesis composes a new answer only from components that have each independently survived elimination.
+So: **searchers explore, critics surface concerns, the synthesizer decides.** The critic does not eliminate — issuing BROKEN/SURVIVED verdicts throws away the 80% of each candidate that worked and quietly hands the decision to the adversary. The critic surfaces concerns tagged by severity; the synthesizer reads everything and weighs them. Composition pulls from components whose concerns are minor or resolved — not from candidates that "won".
 
 ## Why real subagents, not inline personas
 
@@ -31,9 +31,11 @@ Triangulation is expensive. Before dispatching anything, confirm the problem cle
 
 Do this once, in the main context, before dispatching. Write down:
 
-- The problem stated precisely, including what counts as a correct solution (the **acceptance criteria** — the adversary will need these).
+- The problem stated precisely, including what counts as a correct solution (the **acceptance criteria** — the critic will need these).
 - The constraints that any candidate must satisfy.
 - The sources of uncertainty — what makes this hard, where a wrong answer is likely to hide.
+
+**Discipline check: if you cannot write the acceptance criteria — concrete enough that a critic could test a candidate against them — you do not yet know the problem.** Keep framing in the main context until you can. The cost of three subagents chasing a vague brief is much higher than five extra minutes of clarification here. Vague problems produce vague candidates produce vague concerns; the whole run yields nothing decidable.
 
 Then choose **how the searchers will diverge** — and choose it *for this problem*, because the right axis depends on the problem. There is no fixed default; the wrong axis wastes the whole run on three rephrasings of one path. Candidate axes:
 
@@ -50,35 +52,45 @@ Spawn **at least 3** searcher subagents in the same turn, each with isolated con
 
 Each searcher returns a **candidate**: a proposed solution plus the assumptions it rests on, the part it is least sure about, and how it could be checked. A searcher that finds the problem ill-posed or under-constrained should say so — that is a finding, not a failure.
 
-### Phase 3 — Adversarial filtering
+### Phase 3 — Critical review
 
-This is where solutions are *found*, by elimination. Spawn one or more adversary subagents (isolated context) whose only job is to **break** candidates against the acceptance criteria — not to improve them, not to pick a favorite. See `references/adversary-brief.md`. For each candidate the adversary attempts: counterexamples, violated constraints, hidden or false assumptions, edge cases, and failure modes. A candidate that cannot be broken is *found*; a candidate that breaks is eliminated, and the reason it broke is recorded (often more useful than the candidate itself).
+This is where weaknesses are surfaced — but not where solutions are eliminated. Spawn one or more critic subagents (isolated context) whose job is to find concerns in each candidate against the acceptance criteria. See `references/critic-brief.md`. The critic is **adversarial in attitude** (uncharitable, looks for problems, does not validate) but **not eliminative in authority** (concerns inform; the synthesizer decides). It does not improve candidates, rank them, or pick a favorite.
 
-If the adversary breaks everything, do not force a winner — return to Phase 1, widen the divergence, and search again.
+For each candidate the critic attempts the usual attacks — counterexamples, violated constraints, hidden or false assumptions, edge cases, failure modes — and reports concerns tagged by severity:
+
+- **CRITICAL** — would produce incorrect behavior or violate a hard acceptance criterion. Must be resolved before the candidate can be the answer.
+- **MAJOR** — significant friction, regression, or risk that would shape the final design. Not a blocker, but the synthesizer must weigh it.
+- **MINOR** — polish, edge cases, future-tax. Record; not decision-changing.
+- **CLEAR** — no concern found on this attack vector.
+
+No BROKEN/SURVIVED verdicts. A verdict hides the 80% of a candidate that worked; a severity-tagged concern lets the synthesizer absorb the working parts and route around the broken ones. The matrix of (candidate × attack-vector → severity) is the artifact that goes into Phase 4.
+
+A CRITICAL concern that appears across multiple candidates is itself a finding — usually about the problem framing or an upstream constraint, not about any single candidate. The critic should flag this explicitly when it sees it.
 
 ### Phase 4 — Convergence analysis
 
-In the main context, look across what survived:
+In the main context, read the matrix:
 
 - Which conclusions appear **independently** across searchers that used different briefs? Independent agreement is strong evidence; agreement that traces back to a shared assumption is not — name the shared assumption explicitly.
 - Which assumptions actually differ between candidates, and does the answer depend on which is true?
-- Which risks did the adversary raise that remain unresolved?
+- Which CRITICAL concerns appear across multiple candidates? **Shared critical concerns are usually about the problem framing, not the candidates** — they are the most valuable signal in the whole run. Surface them explicitly before moving to Phase 5.
+- Which MAJOR concerns will shape the final design even on the winning candidate? List them; they survive into the output.
 
-### Phase 5 — Select and synthesize
+### Phase 5 — Synthesize
 
-Selection, not blending.
+The synthesizer reads the whole matrix — every candidate with every concern annotated — and decides. The decision takes one of four shapes:
 
-- **If one candidate survives:** that is the found solution.
-- **If several survive and agree:** report the solution and note the independent corroboration.
-- **If several survive and disagree:** this is the important case, and it is the user's call — not Claude's. When candidates have *each survived adversarial filtering* and still disagree, the deciding factor is almost always something only the user knows: a business constraint, a risk tolerance, which assumption actually holds in their context. Do not guess it, and do not blend the candidates into a compromise none of them validated.
+- **One candidate has only minor concerns.** That's the found solution. Report the minor concerns alongside it; they are known costs, not surprises.
 
-  Your job before asking is to make the question **decidable in one read**. Compress the fork down to the single pivot that resolves it, then ask. "These disagree, what do you want?" is useless; "Candidate A is correct if writes are rare, Candidate B if they're frequent — which matches your actual load?" is answerable instantly. For each surviving candidate state: what it is, the one condition under which it's the right choice, and its main tradeoff. Then ask the user to pick.
+- **A CRITICAL concern is shared across multiple candidates.** That concern is the real finding, not the candidates. It usually points at problem framing, an upstream blocker, or a wrong assumption baked into the search space. Report the shared concern as the answer. Do not pick a candidate from a set that all share the same blocker — fix the blocker first.
 
-  **Headless fallback:** if there is no user to ask (automated pipeline, subagent context, batch run), do not stall. Present the fork, recommend the candidate that is safest under the widest range of conditions, and flag the choice as unresolved and owner-pending.
+- **Several candidates each have different CRITICAL concerns that don't converge.** Compress the disagreement to the single deciding pivot and ask the user — but only after confirming the concerns are actually critical *for this context* (some may be negotiable when constraints relax). Hand them a one-read decision: "Candidate A is correct if X; Candidate B if Y; which holds in your context?" For each candidate state: what it is, the one condition under which its concerns are tolerable, and its main tradeoff.
 
-  This branch fires **only** for genuine post-filtering disagreement. If candidates merely look different but you haven't actually run them through Phase 3, that's not a fork to defer — finish the elimination work first. Asking the user is not an escape hatch for skipped verification.
+  **Headless fallback:** if there is no user to ask (automated pipeline, subagent context, batch run), do not stall. Present the fork, recommend the candidate whose critical concerns are easiest to retire under the widest range of conditions, and flag the choice as unresolved and owner-pending.
 
-Compose the final answer only from validated components.
+- **Every candidate has CRITICAL concerns and they don't converge on a shared cause.** The search space was too narrow. Return to Phase 1, widen the divergence (often by changing the divergence axis, not just the briefs), and search again.
+
+Composition pulls from components whose concerns are minor or resolved. If parts of different candidates can be combined — for example, Candidate A's structure with Candidate B's error-handling — that's selection, not blending. Be explicit about which part of which candidate is being retained and why; concerns travel with the components.
 
 ---
 
@@ -88,19 +100,19 @@ ALWAYS structure the final output as:
 
 ```
 ## Found solution
-[The selected solution. If candidates survived but disagree, do NOT put an answer here — instead present each survivor with its deciding condition and tradeoff, and ask the user to choose. Only fill this in once the fork is resolved or a single candidate survived.]
+[The selected solution, or — if a shared critical concern was the real finding — that concern stated as the answer. If candidates have different critical concerns and the fork is on the user, do NOT put an answer here; present each candidate with its deciding condition and tradeoff, and ask. Only fill this in once the fork is resolved or a clear answer emerged.]
 
-## How it was found
-[Which candidates were eliminated and why — the adversary's kills. This is the evidence the answer is right, so don't omit it.]
+## Concerns matrix
+[One row per candidate. For each, list its critical / major / minor concerns with the specific case or evidence. This is the artifact the synthesizer weighed; show it so the reader can re-weigh.]
 
 ## Independent corroboration
-[Which conclusions appeared across independent searchers. Name any shared assumption behind apparent agreement.]
+[Which conclusions appeared across independent searchers, and which CRITICAL concerns appeared across multiple candidates. Name any shared assumption behind apparent agreement. Shared critical concerns are usually the most informative signal in the whole run.]
 
 ## Unresolved risks
-[Adversary findings that survived. Be honest; do not present an uncertain answer as certain.]
+[Major concerns that survive on the chosen path. Be honest; do not present an uncertain answer as certain.]
 
 ## Confidence
-[Calibrated, with the reason. "High — three independent decompositions converged and the adversary could not break it" is useful; "high" alone is not.]
+[Calibrated, with the reason. "High — three independent decompositions converged and no candidate carried a critical concern" is useful; "high" alone is not.]
 ```
 
 ---
@@ -109,8 +121,10 @@ ALWAYS structure the final output as:
 
 - **Inline personas instead of real subagents.** Correlated by construction; proves nothing.
 - **Blending to avoid disagreement.** Destroys the signal the search was run to produce.
-- **Letting the adversary author or pick favorites.** Its job is to break, not to build or vote.
-- **Forcing a winner when everything broke.** Search again or report honestly that nothing held.
-- **Deferring to the user before doing the elimination.** Asking the user to choose is for genuine post-filtering forks, not a substitute for running Phase 3. And when you do ask, hand them a one-read decision — not a raw pile of candidates.
+- **Issuing BROKEN/SURVIVED verdicts from the critic.** Hides the 80% of each candidate that worked and quietly hands the decision to the critic. Use severity-tagged concerns instead.
+- **Letting the critic author or pick favorites.** Its job is to surface concerns, not to build or vote.
+- **Forcing a winner when every candidate has critical concerns and they don't share a cause.** Either a shared concern is the real finding, or the search space was too narrow. Don't paper over it.
+- **Deferring to the user before doing critical review.** Asking the user to choose is for genuine post-review forks where candidates carry different critical concerns. It is not a substitute for running Phase 3. And when you do ask, hand them a one-read decision — not a raw pile of candidates.
+- **Dispatching searchers against a vague target.** If you can't write the acceptance criteria, candidates will be incomparable and concerns ungroundable. Fix the framing first.
 - **Reporting a confidence level without the reason for it.**
 - **Running this on easy problems.** The cost only pays off when verification is genuinely hard.
